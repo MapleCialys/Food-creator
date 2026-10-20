@@ -2,7 +2,7 @@
 
 Application Android de planification de repas.
 
-- **Repas unique** : une idée de repas qui respecte le budget du repas.
+- **Repas unique** : 5 idées de repas au choix, avec photo, dans le budget du repas.
 - **Semaine** : 14 repas (midi et soir, du lundi au dimanche) et une liste d'épicerie.
 
 L'app pose quelques questions : nombre de personnes, budget, préférences alimentaires

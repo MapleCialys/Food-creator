@@ -1,9 +1,11 @@
 package com.foodcreator.app
 
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +18,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -24,8 +29,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.foodcreator.core.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.URL
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -33,7 +41,7 @@ sealed interface Screen {
     data object Home : Screen
     data class Form(val week: Boolean) : Screen
     data class Loading(val text: String) : Screen
-    data class Single(val meal: Meal, val prefs: Preferences) : Screen
+    data class Options(val meals: List<Meal>, val prefs: Preferences, val seen: Set<String>) : Screen
     data class Week(val meals: List<Meal>, val prefs: Preferences) : Screen
     data class Detail(val meal: Meal) : Screen
     data class Shopping(val meals: List<Meal>) : Screen
@@ -51,15 +59,17 @@ class MainViewModel : ViewModel() {
     private fun replaceLoading(s: Screen) { if (stack.lastOrNull() is Screen.Loading) stack[stack.lastIndex] = s }
 
     fun generate(prefs: Preferences, week: Boolean, exclude: Set<String> = emptySet()) {
-        go(Screen.Loading(if (week) "Préparation de la semaine…" else "Recherche d'une idée de repas…"))
+        go(Screen.Loading(if (week) "Préparation de la semaine…" else "Recherche de 5 idées de repas…"))
         job?.cancel()
         job = viewModelScope.launch {
+            val progress = { done: Int, total: Int ->
+                viewModelScope.launch { replaceLoading(Screen.Loading("${if (week) "Semaine" else "Idées"} : $done / $total repas")) }
+                Unit
+            }
             val result = runCatching {
-                if (week) planner.week(prefs) { done, total ->
-                    viewModelScope.launch { replaceLoading(Screen.Loading("Semaine : $done / $total repas")) }
-                }
-                    .takeIf { it.isNotEmpty() }?.let { Screen.Week(it, prefs) }
-                else planner.single(prefs, exclude)?.let { Screen.Single(it, prefs) }
+                if (week) planner.week(prefs, progress).takeIf { it.isNotEmpty() }?.let { Screen.Week(it, prefs) }
+                else planner.options(prefs, exclude = exclude, progress = progress).takeIf { it.isNotEmpty() }
+                    ?.let { Screen.Options(it, prefs, exclude + it.map { m -> m.recipe.url }) }
             }.getOrNull()
             replaceLoading(result ?: Screen.Error("Aucune recette trouvée. Vérifiez la connexion Internet ou assouplissez vos critères."))
         }
@@ -87,11 +97,9 @@ fun App(vm: MainViewModel = viewModel()) {
             is Screen.Loading -> Column(Modifier.fillMaxSize(), Arrangement.Center, Alignment.CenterHorizontally) {
                 CircularProgressIndicator(); Spacer(Modifier.height(16.dp)); Text(screen.text)
             }
-            is Screen.Single -> MealDetail(screen.meal) {
-                Button({ vm.back(); vm.generate(screen.prefs, false, setOf(screen.meal.recipe.url)) }, Modifier.fillMaxWidth()) { Text("Autre idée") }
-            }
+            is Screen.Options -> Options(screen, vm)
             is Screen.Week -> WeekPlan(screen, vm)
-            is Screen.Detail -> MealDetail(screen.meal) {}
+            is Screen.Detail -> MealDetail(screen.meal)
             is Screen.Shopping -> Shopping(screen.meals)
             is Screen.Error -> Column {
                 Text(screen.text); Spacer(Modifier.height(16.dp)); Button({ vm.back() }) { Text("Retour") }
@@ -173,14 +181,45 @@ private fun WeekPlan(s: Screen.Week, vm: MainViewModel) = Column(Modifier.fillMa
 }
 
 @Composable
-private fun MealDetail(m: Meal, actions: @Composable () -> Unit) {
+private fun Options(s: Screen.Options, vm: MainViewModel) = Column(Modifier.fillMaxSize()) {
+    Text("Choisissez votre repas", style = MaterialTheme.typography.headlineSmall)
+    Text("Budget : ${s.prefs.budget.money()} pour ${s.prefs.people} personne(s)")
+    Spacer(Modifier.height(8.dp))
+    Button({ vm.back(); vm.generate(s.prefs, false, s.seen) }, Modifier.fillMaxWidth()) { Text("5 autres idées") }
+    LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(vertical = 8.dp)) {
+        items(s.meals) { m ->
+            Card({ vm.go(Screen.Detail(m)) }, Modifier.fillMaxWidth()) {
+                RemoteImage(m.recipe.image, m.recipe.title, Modifier.fillMaxWidth().height(160.dp))
+                Column(Modifier.padding(12.dp)) {
+                    Text(m.recipe.title, style = MaterialTheme.typography.titleMedium)
+                    Text(listOfNotNull(m.recipe.minutes?.let { "$it min" }, m.cost.money(), host(m.recipe.url)).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+// shortcut: pas de cache, l'image est retéléchargée à chaque affichage; passer à Coil si ça devient lent.
+@Composable
+private fun RemoteImage(url: String?, description: String, modifier: Modifier) {
+    val image by produceState<ImageBitmap?>(null, url) {
+        value = url?.let {
+            withContext(Dispatchers.IO) { runCatching { URL(it).openStream().use(BitmapFactory::decodeStream)?.asImageBitmap() }.getOrNull() }
+        }
+    }
+    image?.let { Image(it, description, modifier, contentScale = ContentScale.Crop) }
+}
+
+@Composable
+private fun MealDetail(m: Meal) {
     val uri = LocalUriHandler.current
     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item {
+            RemoteImage(m.recipe.image, m.recipe.title, Modifier.fillMaxWidth().height(220.dp))
             Text(m.recipe.title, style = MaterialTheme.typography.headlineSmall)
             Text(listOfNotNull(m.recipe.minutes?.let { "$it min" }, "Coût estimé : ${m.cost.money()}").joinToString(" · "))
             TextButton({ uri.openUri(m.recipe.url) }) { Text("Voir la recette sur ${host(m.recipe.url)}") }
-            actions()
             if (m.ingredients.any { it.product?.estimated == true })
                 Text("* prix estimé : produit introuvable sur superc.ca", style = MaterialTheme.typography.bodySmall)
             Text("Ingrédients", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))

@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.withContext
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -19,25 +18,31 @@ class Planner(
 ) {
     private val searches = ConcurrentHashMap<String, List<String>>()
 
-    suspend fun single(p: Preferences, exclude: Set<String> = emptySet()): Meal? = withContext(Dispatchers.IO) {
-        val used = Collections.synchronizedSet(exclude.toMutableSet())
-        themes(p, Slot.SOIR).firstNotNullOfOrNull { pick(it, "Repas", p, p.budget, used) }
-    }
+    /** [count] idées de repas différentes, chacune dans le budget du repas si possible. */
+    suspend fun options(
+        p: Preferences, count: Int = 5, exclude: Set<String> = emptySet(), progress: (Int, Int) -> Unit = { _, _ -> },
+    ): List<Meal> = plan(p, (1..count).map { "Idée $it" to Slot.SOIR }, p.budget, exclude, if (p.wish.isBlank()) 1 else 0, progress)
 
     /** 7 jours × midi et soir. [progress] reçoit (repas prêts, total). */
-    suspend fun week(p: Preferences, progress: (Int, Int) -> Unit = { _, _ -> }): List<Meal> = coroutineScope {
-        val used = Collections.synchronizedSet(mutableSetOf<String>())
-        val perMeal = p.budget / 14
+    suspend fun week(p: Preferences, progress: (Int, Int) -> Unit = { _, _ -> }): List<Meal> = plan(
+        p, DAYS.flatMap { d -> Slot.entries.map { "$d ${it.name.lowercase()}" to it } }, p.budget / 14,
+        rotateEvery = 2, progress = progress,
+    )
+
+    /** Un repas par case, en parallèle. Le thème tourne d'une case à l'autre ([rotateEvery] = 0 : toujours l'envie d'abord). */
+    private suspend fun plan(
+        p: Preferences, slots: List<Pair<String, Slot>>, perMeal: Double, exclude: Set<String> = emptySet(),
+        rotateEvery: Int, progress: (Int, Int) -> Unit = { _, _ -> },
+    ): List<Meal> = coroutineScope {
+        val used = Collections.synchronizedSet(exclude.toMutableSet())
         val done = AtomicInteger()
-        val slots = DAYS.flatMap { d -> Slot.entries.map { d to it } }
         val themes = Slot.entries.associateWith { themes(p, it) }
         val io = Dispatchers.IO.limitedParallelism(4) // pour ne pas inonder les sites de requêtes
-        slots.mapIndexed { i, (day, slot) ->
+        slots.mapIndexed { i, (label, slot) ->
             async(io) {
                 val list = themes.getValue(slot)
-                val label = "$day ${slot.name.lowercase()}"
-                // Rotation des thèmes pour varier, puis les autres en secours.
-                (list.drop(i / 2 % list.size) + list.take(i / 2 % list.size))
+                val shift = if (rotateEvery == 0) 0 else i / rotateEvery % list.size
+                (list.drop(shift) + list.take(shift))
                     .firstNotNullOfOrNull { pick(it, label, p, perMeal, used) }
                     .also { progress(done.incrementAndGet(), slots.size) }
             }

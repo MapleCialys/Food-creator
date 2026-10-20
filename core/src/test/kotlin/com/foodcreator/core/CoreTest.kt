@@ -95,8 +95,11 @@ class CoreTest {
         assertEquals(listOf("bloc de tofu", "oignon"), Planner.shoppingList(week).map { it.first.name })
     }
 
-    @Test fun singleMealPrefersBudget() = runBlocking {
-        val meal = Planner(FakeRecipes(), FakePrices, Random(2)).single(Preferences(people = 4, budget = 10.0))!!
-        assertTrue(meal.cost <= 10.0, "coût ${meal.cost}")
+    @Test fun fiveDistinctOptionsWithinBudget() = runBlocking {
+        val options = Planner(FakeRecipes(), FakePrices, Random(2)).options(Preferences(people = 4, budget = 10.0), exclude = setOf("u1"))
+        assertEquals(5, options.size)
+        assertEquals(5, options.map { it.recipe.url }.toSet().size)
+        assertTrue(options.none { it.recipe.url == "u1" })
+        assertTrue(options.all { it.cost <= 10.0 }, options.map { it.cost }.toString())
     }
 }
