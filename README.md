@@ -31,7 +31,8 @@ temps maximum, ingrédients à éviter et une envie facultative.
 ```
 
 L'APK se trouve dans `app/build/outputs/apk/debug/`. GitHub Actions le compile à chaque push
-(artefact `food-creator-debug-apk`).
+et le publie en Release :
+[télécharger la dernière version](https://github.com/MapleCialys/Food-creator/releases/latest/download/FoodCreator.apk).
 
 ## Limites connues
 
