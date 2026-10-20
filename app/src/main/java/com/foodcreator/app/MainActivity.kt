@@ -151,7 +151,7 @@ private fun Form(week: Boolean, onSubmit: (Preferences) -> Unit) {
 }
 
 @Composable
-private fun WeekPlan(s: Screen.Week, vm: MainViewModel) {
+private fun WeekPlan(s: Screen.Week, vm: MainViewModel) = Column(Modifier.fillMaxSize()) {
     val total = s.meals.sumOf { it.cost }
     Text("Votre semaine", style = MaterialTheme.typography.headlineSmall)
     Text("Total estimé : ${total.money()} / budget ${s.prefs.budget.money()}",
